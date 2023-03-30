@@ -1,0 +1,375 @@
+---
+title: "Barclays Premier League Simulation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(tidyverse)
+```
+
+#Read in Premier Leage Dataframe
+```{r}
+soccer<-read_csv("/Users/jake/Downloads/spi_global_rankings.csv")
+```
+
+#Look at some summary statistics
+```{r}
+mean.off<-mean(soccer$off)
+mean.def<-mean(soccer$def)
+lmean.off<-mean(log(soccer$off))
+lmean.def<-mean(log(soccer$def) ) 
+mean.off
+mean.def
+```
+
+#Filter dataframe to only include teams from Barclay's Premier League, the League we will be simulating
+```{r}
+premLeague<-subset(soccer,league=="Barclays Premier League")
+premTeams<-premLeague$name
+rownames(premLeague)<-premTeams
+df.prem<-premLeague[,c("off","def")]
+rownames(df.prem)<-premTeams
+df.prem$premTeams<-premTeams
+df.prem<-with(df.prem,df.prem[order(premTeams),])
+df.prem
+```
+
+#Look at new summary statistics.
+```{r}
+lmean.def<- log(mean(df.prem$def))
+lmean.off<- log(mean(df.prem$off))               
+df.prem["alpha"]<-log(df.prem["off"])-lmean.def
+df.prem["delta"]<-lmean.off-log(df.prem["def"])
+#View(df.prem)
+```
+
+#Build alpha and delta lists for poisson distribution
+```{r}
+alphaList<-df.prem$alpha
+deltaList<-df.prem$delta
+names(alphaList)<-df.prem$premTeams
+names(deltaList)<-df.prem$premTeams
+alphaList["Everton"]
+```
+
+#Create function that will return a score for a game based on the poisson distribution
+```{r}
+draw.score<-function(team1,team2){
+    c(
+        rpois(1,exp(alphaList[team1]-deltaList[team2])),
+  rpois(1,exp(alphaList[team2]-deltaList[team1]))
+    )
+}
+draw.score("Liverpool","Arsenal")
+```
+
+#Get all of the games played in a season
+```{r}
+#install.packages('gtools')
+library('gtools')
+# All possible matches in a season
+allMatches<-permutations(20, 2, v=premTeams,repeats.allowed=FALSE)
+colnames(allMatches)<-c("home","away")
+head(allMatches,9)
+length(allMatches)
+```
+
+
+#Write a function that uses all of the games in a season and scores generator to simulate one season of games
+```{r}
+generate_scores_matrix<-function(){
+  ScoresMatrix <- as.data.frame(matrix(nrow=nrow(allMatches),  ncol=4))
+  for (ii in 1:nrow(allMatches)  ) {
+       ScoresMatrix[ii,1:2]=allMatches[ii,]
+       ScoresMatrix[ii,3:4]= draw.score(allMatches[ii,"home"],allMatches[ii,"away"] )  
+  }
+  colnames(ScoresMatrix)<-c("home.team","away.team","home.score","away.score")
+  ScoresMatrix$home.points<-0
+  ScoresMatrix$home.points[ScoresMatrix$home.score>ScoresMatrix$away.score]<-3
+  ScoresMatrix$home.points[ScoresMatrix$home.score==ScoresMatrix$away.score]<-1
+  
+  ScoresMatrix$away.points<-0
+  ScoresMatrix$away.points[ScoresMatrix$away.score>ScoresMatrix$home.score]<-3
+  ScoresMatrix$away.points[ScoresMatrix$away.score==ScoresMatrix$home.score]<-1
+  ScoresMatrix$score.dif<-ScoresMatrix$home.score-ScoresMatrix$away.score
+  
+  sum_scoresdif<-rep(999,20)
+  goals_scored<-rep(999,20)
+  l<-1
+  
+  for(name in premTeams){
+  tempteam<-ScoresMatrix%>%filter(home.team==name)
+  sum_scoresdif[l]<-sum(tempteam$score.dif)
+  goals_scored[l]<-sum(tempteam$home.score)
+  tempteam<-ScoresMatrix%>%filter(away.team==name)
+  sum_scoresdif[l]<-sum_scoresdif[l] - sum(tempteam$score.dif)
+  goals_scored[l]<-goals_scored[l] + sum(tempteam$away.score)
+  l<-l+1
+}
+  return(list(ScoresMatrix, sum_scoresdif, goals_scored))
+
+}
+
+generate_scores_matrix()[[1]]
+```
+
+
+#Assign points to teams and corresponding monetary gains based on final rank 
+```{r}
+money<-c(220,210,200,180,160,150,140,125,120,117,116,115,113,110,108,105,100,51,50,49)
+
+
+generate_win_list<-function(){
+  # Example scores through the entire season
+  scoreslist<-generate_scores_matrix()
+  ScoresMatrix<-scoreslist[[1]]
+  places<-as.data.frame(matrix(nrow=20, ncol=2))
+  z<-1
+  for(j in premTeams){
+    tempteam<-ScoresMatrix%>%filter(home.team==j | away.team==j)
+    places[z,1]<-j
+    wincount<-0
+    for(k in 1:nrow(tempteam)){
+      if(tempteam$home.team[k]==j){
+        wincount<-wincount+tempteam$home.points[k]     
+      }
+      else{
+        wincount<-wincount+tempteam$away.points[k]
+      }
+    }
+    places[z,2]<-wincount
+    z<-z+1
+  }
+  places$sum_goals<-scoreslist[[2]]
+  places$goals_scored<-scoreslist[[3]]
+  places<-places[order(-places$V2, -places$sum_goals, -places$goals_scored), ]
+  places$place<-1:20
+  places$top7<-0
+  places$top7[places$place<8]<-1
+  places$middle10<-0
+  places$middle10[places$place>=8 & places$place<=17]<-1
+  places$bottom3<-0
+  places$bottom3[places$place>17]<-1
+  places$money<-money
+  
+  return(places)
+}
+generate_win_list()
+```
+
+#Simulate 100 seasons
+```{r}
+ordered_list<-generate_win_list()
+for(i in 1:100){
+  temp_ordered_list<-generate_win_list()
+  ordered_list<-rbind(ordered_list,temp_ordered_list)
+  print(i)
+}
+```
+
+#What were the average earnings for teams over 100 seasons
+```{r}
+ordered_list$money<-rep(money, 101)
+avg_place<-ordered_list%>%group_by(V1)%>%summarise(mean_place=mean(place), med_place=median(place),mean_top7=mean(top7), mean_middle10=mean(middle10), mean_bottom3=mean(bottom3), sd_place=sd(place), mean_money=mean(money), sd_money=sd(money))
+avg_place<-avg_place[order(-avg_place$sd_money),]
+avg_place$final_place<-1:20
+ordered_list
+avg_place
+```
+
+
+```{r}
+ggplot(avg_place, aes(x=reorder(V1,-mean_place), y=mean_place)) + geom_col() +coord_flip() +theme_bw() +labs(x="Team Order", y="Expected Ranking", title="Ranked Team", subtitle="Barclay's Premier League")
+```
+
+
+```{r}
+ggplot(ordered_list, aes(x=reorder(V1,money), y=money))+geom_boxplot() +coord_flip() +theme_bw() +labs(x="Team", y="Financial Rewards(in Millions)", title="Variability of Earnings for Every Team", subtitle="Barclay's Premier League")
+```   
+
+#How much money does 1 additional win grant each team
+```{r}
+added_money<-as.data.frame(matrix(nrow=20, ncol=5))
+colnames(added_money)<-c("Team.Name", "mean_pre3", "mean_post3", "sd_pre3", "sd_post3")
+
+x<-1
+
+for(name in premTeams){
+  added_money[x,1]<-name
+  ordered_list1<-ordered_list
+  
+  ordered_list1$V2<-as.numeric(ordered_list1$V2)
+  
+  ordered_list1$V2[ordered_list1$V1==name]<-ordered_list1$V2[ordered_list1$V1==name]+3
+  
+  ordered_list1
+  
+  num<-21
+  
+  reordered_list<-ordered_list1[1:20,]
+  reordered_list<-reordered_list[order(-reordered_list$V2, -reordered_list$sum_goals, -reordered_list$goals_scored), ]
+  reordered_list$place<-1:20
+  
+  
+  for(i in 2:101){
+    num2<-num+19
+    league<-ordered_list1[num:num2,]
+    league<-league[order(-league$V2, -league$sum_goals, -league$goals_scored), ]
+    league$place<-1:20
+    reordered_list<-rbind(reordered_list, league)
+    num<-i*20+1
+  }
+  
+  reordered_list$money<-rep(money, 101)
+  
+  added_money[x,2]<-mean(ordered_list$money[ordered_list$V1==name])
+  added_money[x,3]<-mean(reordered_list$money[reordered_list$V1==name])
+  added_money[x,4]<-sd(ordered_list$money[ordered_list$V1==name])
+  added_money[x,5]<-sd(reordered_list$money[reordered_list$V1==name])
+  x<-x+1
+}
+
+added_money$money_added<-added_money$mean_post3-added_money$mean_pre3
+added_money
+```
+```{r}
+ggplot(added_money, aes(x=reorder(Team.Name,money_added), y=money_added))+geom_col(fill="orange")+coord_flip()
+```
+
+
+#Calculate 10% increase in defense for each team
+```{r}
+f<- function(x, df, sum){
+  0.9*sum - (exp(df$alpha[1]-x)+exp(df$alpha[2]-x)+exp(df$alpha[3]-x)+exp(df$alpha[4]-x)+exp(df$alpha[5]-x)+exp(df$alpha[6]-x)+exp(df$alpha[7]-x)+exp(df$alpha[8]-x)+exp(df$alpha[9]-x)+exp(df$alpha[10]-x)+exp(df$alpha[11]-x)+exp(df$alpha[12]-x)+exp(df$alpha[13]-x)+exp(df$alpha[14]-x)+exp(df$alpha[15]-x)+exp(df$alpha[16]-x)+exp(df$alpha[17]-x)+exp(df$alpha[18]-x)+exp(df$alpha[19]-x))
+}
+
+
+#delta
+deltas<-df.prem$delta
+new_deltas<-rep(999,20)
+x<-1
+for(name in premTeams){
+  tempdf<-cbind(df.prem$premTeams, data_frame(c(rep(deltas[x], 20))), df.prem$alpha)
+  colnames(tempdf)=c("team", "team_delta","alpha")
+  tempdf<-tempdf[-x, ]
+  tempdf$exp_diff<- exp(tempdf$alpha-tempdf$team_delta)
+  sum<- sum(tempdf$exp_diff)
+  new_deltas[x]<-newton.rhapson(f, tempdf, sum, 0,output=TRUE)
+  x<-x+1
+}
+
+new_deltas
+```
+
+#simulate 100 seasons for each team 10% increase in defense
+```{r}
+x<-0
+defense_money<-rep(0,20)
+for(team in premTeams){
+  x<-x+1
+  alphaList<-df.prem$alpha
+  names(alphaList)<-df.prem$premTeams
+  deltaList<-df.prem$delta
+  names(deltaList)<-df.prem$premTeams
+  deltaList[[x]]<-new_deltas[x]
+  ordered_list_def<-generate_win_list()
+  for(i in 1:100){
+    temp_ordered_list<-generate_win_list()
+  ordered_list_def<-rbind(ordered_list_def,temp_ordered_list)
+  }
+  avg_place_def<-ordered_list_def%>%group_by(V1)%>%summarise(mean_place=mean(place), med_place=median(place),mean_top7=mean(top7), mean_middle10=mean(middle10), mean_bottom3=mean(bottom3), sd_place=sd(place), mean_money=mean(money), sd_money=sd(money))
+  #avg_place_def<-avg_place_def[order(-avg_place_def$mean_money),]
+  #print(ordered_list)
+  #print(avg_place)
+  print(team)
+  defense_money[x]<-avg_place_def[x,8]
+}
+
+defense_money
+```
+
+#Calculate 10% increase in offense for each team
+```{r}
+f<- function(x, df, sum){
+  1.1*sum - (exp(x-df$delta[1])+exp(x-df$delta[2])+exp(x-df$delta[3])+exp(x-df$delta[4])+exp(x-df$delta[5])+exp(x-df$delta[6])+exp(x-df$delta[7])+exp(x-df$delta[8])+exp(x-df$delta[9])+exp(x-df$delta[10])+exp(x-df$delta[11])+exp(x-df$delta[12])+exp(x-df$delta[13])+exp(x-df$delta[14])+exp(x-df$delta[15])+exp(x-df$delta[16])+exp(x-df$delta[17])+exp(x-df$delta[18])+exp(x-df$delta[19]))
+}
+
+#man city
+alphas<-df.prem$alpha
+new_alphas<-rep(999,20)
+x<-1
+for(name in premTeams){
+  tempdf<-cbind(df.prem$premTeams, data_frame(c(rep(alphas[x], 20))), df.prem$delta)
+  colnames(tempdf)=c("team", "team_alpha","delta")
+  tempdf<-tempdf[-x, ]
+  tempdf$exp_diff<- exp(tempdf$team_alpha-tempdf$delta)
+  sum<- sum(tempdf$exp_diff)
+  new_alphas[x]<-newton.rhapson(f, tempdf, sum, 0,output=TRUE)
+  x<-x+1
+}
+
+new_alphas
+```
+
+#simulate 100 seasons for each team having 10% increased offense
+```{r}
+x<-0
+offense_money<-rep(0,20)
+for(team in premTeams){
+  x<-x+1
+  alphaList<-df.prem$alpha
+  names(alphaList)<-df.prem$premTeams
+  deltaList<-df.prem$delta
+  names(deltaList)<-df.prem$premTeams
+  alphaList[[x]]<-new_alphas[x]
+  ordered_list_off<-generate_win_list()
+  for(i in 1:100){
+    temp_ordered_list<-generate_win_list()
+    ordered_list_off<-rbind(ordered_list_off,temp_ordered_list)
+  }
+  avg_place_off<-ordered_list_off%>%group_by(V1)%>%summarise(mean_place=mean(place), med_place=median(place),mean_top7=mean(top7), mean_middle10=mean(middle10), mean_bottom3=mean(bottom3), sd_place=sd(place), mean_money=mean(money), sd_money=sd(money))
+  #print(ordered_list)
+  #print(avg_place)
+  print(team)
+  print(avg_place_off)
+  offense_money[x]<-avg_place_off[x,8]
+}
+
+offense_money
+```
+
+```{r}
+alphaList<-df.prem$alpha
+names(alphaList)<-df.prem$premTeams
+alphaList
+alphaList[[1]]<-new_alphas[1]
+alphaList
+```
+
+#Do teams gain (monetarily) more from 10% offense increase or 10% defense increase
+```{r}
+#names(offense_money)<-premTeams
+#offense_money<-as.data.frame(offense_money)
+offense_money1<-unlist(offense_money)
+offense_money1
+defense_money1<-unlist(defense_money)
+avg_place<-with(avg_place, avg_place[order(V1),])
+
+avg_place$offense_money<-offense_money1
+avg_place$money_invest_off<-avg_place$offense_money-avg_place$mean_money
+avg_place$defense_money<-defense_money1
+avg_place$money_invest_def<-avg_place$defense_money-avg_place$mean_money
+avg_place
+```
+
+```{r}
+ggplot(avg_place, aes(x=reorder(V1, money_invest_def)))+geom_col(aes(y=money_invest_def), fill="blue",position = 'dodge')+geom_col(aes(y=money_invest_off), fill="orange",position = 'dodge')+ theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+```
+
+
